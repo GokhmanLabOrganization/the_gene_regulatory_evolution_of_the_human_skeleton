@@ -1,0 +1,9 @@
+ref_name	archaic_allele
+alt_name	modern_allele
+assembly_path	/home/labs/davidgo/Collaboration/Genomes/Genome_fastas/hg19/hg19.fa
+meme_path	/home/labs/davidgo/Collaboration/humanMPRA/TF_analysis/final/intermediate_files/filtered_MEME_files/filtered_chondrocyte_JASPAR2024_CORE_vertebrates_non-redundant_pfms_meme.meme
+PBM_path	/home/labs/davidgo/Collaboration/humanMPRA/TF_analysis/final/intermediate_files/filtered_PBM_pickle/pbm_8mer_data_filtered_chondrocytes.pkl
+variants_path	/home/labs/davidgo/Collaboration/humanMPRA/TF_analysis/final/variant_tool_input/hMPRA_variant_tool_input_chonds.bed
+output_path	/home/labs/davidgo/Collaboration/humanMPRA/TF_analysis/final/variant_tool_outputs/
+assembly_type	ref
+sequence_pad

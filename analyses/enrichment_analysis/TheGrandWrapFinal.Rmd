@@ -1,0 +1,725 @@
+---
+title: "GrandEnrichWrap"
+author: "Nadav"
+date: "2024-12-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+# Initialize
+
+```{r}
+#lapply(paste('package:',names(sessionInfo()$otherPkgs),sep=""),detach,character.only=TRUE,unload=TRUE)
+
+
+library(dplyr)
+library(ggplot2)
+
+```
+
+
+## Define relevant functions
+```{r}
+
+generate_run_id <- function() {
+  return(format(Sys.time(), "run_%Y%m%d_%H%M%S"))
+}
+
+create_run_directory <- function(base_dir) {
+  run_id <- generate_run_id()
+  run_dir <- file.path(base_dir, run_id)
+  dir.create(run_dir, recursive = TRUE, showWarnings = FALSE)
+  return(list(run_id = run_id, run_dir = run_dir))
+}
+
+log_run <- function(master_log,parameters,data_dir,filterinng_description,
+                    background_description,group_description,gene_group_count,
+                    background_group_count ) {
+  
+  if (!file.exists(master_log)) {
+    write.table(
+      data.frame(
+        RunID = character(),
+        DateTime = character(),
+        
+        data_dir = character(),
+        filterinng_description = character(),
+        background_description = character(),
+        group_description = character(),
+        
+        gene_group_count = numeric(),
+        background_group_count = numeric(),
+        
+        GrandEnrich_dbs = character(),
+        comp = character(),
+        locORser = character(),
+        minGenes = numeric(),
+        uniq = character(),
+        outdir = character(),
+        
+        #HPO specific
+        TYPorALL = character(),
+        HPO_dbVer = character(),
+        systems = character(),
+        bodyparts = character(),
+        enrORdep = character(),
+        directional =character(),
+        
+        #ORGANizer specific
+        curationLevel = character(),
+        FreqOfPheno =character(),
+        onlySkel = character()),
+
+        file = master_log, sep = ",", row.names = FALSE, col.names = TRUE
+    )
+  }
+  
+  log_entry <- data.frame(
+    RunID = parameters$run_id,
+    DateTime = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+    
+    data_dir = data_dir,
+    filterinng_description = filterinng_description,
+    background_description = background_description,
+    group_description = group_description,
+    
+    gene_group_count = gene_group_count,
+    background_group_count = background_group_count, 
+    
+    GrandEnrich_dbs = paste(parameters$GrandEnrich_dbs,collapse=','),
+    comp = parameters$comp,
+    locORser = parameters$locORser,
+    minGenes = parameters$minGenes,
+    uniq = parameters$uniq,
+    outdir = parameters$outdir,
+    
+    #HPO specific
+    TYPorALL = parameters$TYPorALL,
+    HPO_dbVer = parameters$HPO_dbVer,
+    systems = parameters$systems,
+    bodyparts = parameters$bodyparts,
+    enrORdep = parameters$enrORdep,
+    directional =parameters$directional,
+    
+    #ORGANizer specific
+    curationLevel = parameters$curationLevel,
+    FreqOfPheno =parameters$FreqOfPheno,
+    onlySkel = parameters$onlySkel
+  )
+  
+  write.table(log_entry, file = master_log, sep = ",", row.names = FALSE, col.names = FALSE, append = TRUE)
+}
+
+```
+ 
+
+## Define parameters
+
+```{r}
+parameters = list()
+base_dir = "/home/labs/davidgo/Collaboration/humanMPRA/enrichment/final_analysis"
+run_dir_output = create_run_directory(paste(base_dir,'/runs',sep = ''))
+
+parameters$GrandEnrich_dbs = c('GO_BP','KEGG','GAD_Disease')
+parameters$run_id = run_dir_output$run_id
+parameters$outdir = run_dir_output$run_dir
+
+parameters$comp = "Standard with HPO filtering of skeletal"
+parameters$locORser = "ser"
+parameters$minGenes = 10
+parameters$uniq = T
+
+#HPO specific
+parameters$TYPorALL = "ALL"
+parameters$HPO_dbVer = "HPO 2024-04-26 Release"
+parameters$systems = "skeleton"
+parameters$bodyparts = "all"
+parameters$enrORdep = "enr"
+parameters$directional = F
+
+#ORGANizer specific
+parameters$curationLevel = "confident"
+parameters$FreqOfPheno = "all"
+parameters$DBversion = parameters$HPO_dbVer
+parameters$onlySkel = F
+
+```
+
+
+## Load libraries
+
+```{r message=FALSE, warning=FALSE}
+library('dplyr')
+library('tidyr')
+library('ggplot2')
+library('stringr')
+```
+
+## Source GrandEnrich
+```{r}
+grandEnrichDir <- "/home/labs/davidgo/Collaboration/backup/Lab_tools/Gokhman_Enrich/final_scripts"
+
+source(paste(grandEnrichDir,'/TheGrandEnrich_enrich.R',sep=''))
+source(paste(grandEnrichDir,'/ORGANizer_ORGANize.R',sep=''))
+source(paste(grandEnrichDir,'/HPO_enrich.R',sep=''))
+source(paste(grandEnrichDir,'/ORGANizer_compare.R',sep=''))
+source(paste(grandEnrichDir,'/TheGrandEnrich_compare.R',sep=''))
+source(paste(grandEnrichDir,'/HPO_compare.R',sep=''))
+
+
+```
+
+## Load raw data for enrichment analysis
+```{r}
+if(!exists('data')){
+  data_dir = "/home/labs/davidgo/Collaboration/humanMPRA/top_candidates/chondrocytes/humanMPRA_annotations_v3.csv"
+  data <- read.csv(data_dir)
+}
+
+
+```
+
+
+# Data processing
+
+## Filter the data according to preferences. Add description of filtering, which will be saved later
+
+```{r}
+
+filter_genes <- function(bool_str, string_str) {
+  bool_vec <- str_split(bool_str, ";")[[1]] == "T"
+  gene_list <- str_split(string_str, ";")[[1]]
+  filtered_genes <- gene_list[bool_vec]
+  paste(filtered_genes, collapse = ";")
+}
+
+filter_elite_associations <- function(num_str, string_str,within_promoter,num_associations) {
+  num_str = str_split(num_str, ";")[[1]]
+  within_promoter = str_split(within_promoter, ";")[[1]]
+  bool_vec <-(num_str >= num_associations) | (within_promoter == 'T')
+  gene_list <- str_split(string_str, ";")[[1]]
+  filtered_genes <- gene_list[bool_vec]
+  paste(filtered_genes, collapse = ";")
+}
+
+filterinng_description = 'filtering for elite gene - oligo association (at least 2) and for oligos with only one associated gene'
+
+
+
+filtered_data = data%>%
+  filter(DNA_counts_raw_ancestral>50)%>%
+  filter(DNA_counts_raw_derived>50) %>%
+  dplyr::rowwise() %>%
+  mutate(Gene_symbol = filter_elite_associations(num_sources_linking_gene,Gene_symbol, within_promoter ,2))
+
+#mutate(closest_gene = filter_elite_associations(num_sources_linking_gene, closest_gene,2))%>%
+  #mutate(within_promoter = filter_elite_associations(num_sources_linking_gene, within_promoter,2))%>%
+  #mutate(eRNA = filter_elite_associations(num_sources_linking_gene, eRNA,2))%>%
+  #mutate(eQTL = filter_elite_associations(num_sources_linking_gene, eQTL,2))%>%
+  #mutate(HiC = filter_elite_associations(num_sources_linking_gene, HiC,2))
+
+  
+
+  #dplyr::filter(ATACseq_peaks_fetal_chondrocytes<1)%>%
+  #dplyr::filter(H3K27Ac_peaks_fetal_chondrocytes<1)
+
+
+```
+
+## Define background
+
+```{r}
+
+background_description = 'active'
+
+active <- filtered_data %>%
+  filter(!is.na(differential_activity))%>%
+  pull(Gene_symbol)
+
+combined_active <- paste(active, collapse = ";")
+split_active <- strsplit(combined_active, split = ";")[[1]]
+clean_active <- split_active[split_active != ""]
+unique_active <- unique(clean_active)
+
+background = unique_active
+
+
+```
+
+## Define group for enrichment
+
+```{r}
+
+group_description = 'diff active'
+
+
+diff_active = filtered_data%>%
+  filter(differential_activity=='True')%>%
+  filter(abs(logFC_derived_vs_ancestral)>0.25)%>%
+  pull(Gene_symbol)
+
+#diff_active <- filtered_data %>%
+#  filter(differential_activity == "True")%>%
+#  filter(abs(logFC_derived_vs_ancestral) > log2(1.33))%>% # & abs(logFC_derived_vs_ancestral) < log2(2)) %>%
+#  pull(Gene_symbol)
+
+combined_diff_active <- paste(diff_active, collapse = ";")
+split_diff_active <- strsplit(combined_diff_active, split = ";")[[1]]
+clean_diff_active <- split_diff_active[split_diff_active != ""]
+unique_diff_active <- unique(clean_diff_active)
+
+genelist = clean_diff_active
+
+
+title = paste('background:', length(unique_active), 'list:',length(unique_diff_active))
+
+
+```
+
+
+# Define groups of comapre enrichment
+```{r}
+diff_active_up <- filtered_data %>%
+  filter(differential_activity == "True")%>%
+  filter(logFC_derived_vs_ancestral > log2(1.25)) %>%
+  pull(Gene_symbol)
+
+combined_diff_active_up <- paste(diff_active_up, collapse = ";")
+split_diff_active_up <- strsplit(combined_diff_active_up, split = ";")[[1]]
+clean_diff_active_up <- split_diff_active_up[split_diff_active_up != ""]
+unique_diff_active_up <- unique(clean_diff_active_up)
+
+comp1 = "LFC above 1.25"
+
+diff_active_down <- filtered_data %>%
+  filter(differential_activity == "True")%>%
+  filter(logFC_derived_vs_ancestral < -log2(1.25)) %>%
+  pull(Gene_symbol)
+
+combined_diff_active_down <- paste(diff_active_down, collapse = ";")
+split_diff_active_down <- strsplit(combined_diff_active_down, split = ";")[[1]]
+clean_diff_active_down <- split_diff_active_down[split_diff_active_down != ""]
+unique_diff_active_down <- unique(clean_diff_active_down)
+
+comp2 = "LFC below -1.25"
+
+# Save the genes into the log file
+write(unique_diff_active_down, file = paste0(parameters$outdir,'/',parameters$run_id,'_diff_active_down.txt'), ncolumns = 1)
+write(unique_diff_active_up, file = paste0(parameters$outdir,'/',parameters$run_id,'_diff_active_up.txt'), ncolumns = 1)
+write(background, file = paste0(parameters$outdir,'/',parameters$run_id,'_background.txt'), ncolumns = 1)
+
+sink(paste0(parameters$outdir,'/',parameters$run_id,'_parameters.txt'))
+print(parameters)    
+sink() 
+
+```
+
+
+# Run compare test
+```{r}
+
+# compare test
+
+compare_title = paste("up genes:",length(unique_diff_active_up), 'down genes:',length(unique_diff_active_down),' background:', length(background))
+ 
+ GrandEnrich_compare_results = list()
+ 
+ for(db in parameters$GrandEnrich_dbs){
+   print(db)
+   GrandEnrich_compare_results[[db]] = TheGrandEnrich_compare(db = db,
+                       genelist1 = unique_diff_active_up,
+                       genelist2 = unique_diff_active_down,
+                       background = background,
+                       locORser = parameters$locORser,
+                       minGenes = parameters$minGenes,
+                       enrORdep = parameters$enrORdep,
+                       comp_main = parameters$comp,
+                       comp1 = comp1,
+                       comp2 = comp2,
+                       uniq = parameters$uniq,
+                       outdir = base_dir)
+ }
+   
+   
+   
+  print('TheGrandEnrich is done!')
+
+  HPO_compare_results = HPO_compare(
+             genelist1 = unique_diff_active_up,
+             genelist2 = unique_diff_active_down,
+             background = background,
+             minGenes = parameters$minGenes,
+             TYPorALL = parameters$TYPorALL,
+             HPO_dbVer = parameters$HPO_dbVer,
+             systems = parameters$systems,
+             bodyparts = parameters$bodyparts,
+             directional = parameters$directional,
+             enrORdep = parameters$enrORdep,
+             comp_main = parameters$comp,
+             comp1 = comp1,
+             comp2 = comp2,
+             locORser = parameters$locORser,
+             uniq = parameters$uniq,
+             outpath = base_dir
+             )
+  
+  print('HPO enrich is done is done!')
+
+  ORGANizer_compare_results = ORGANizer_compare(
+             genelist1 = unique_diff_active_up,
+             genelist2 = unique_diff_active_down,
+             background = background,
+             curationLevel = parameters$curationLevel,
+             FreqOfPheno = parameters$FreqOfPheno,
+             DBversion = parameters$DBversion,
+             minGenes = parameters$minGenes,
+             onlySkel = parameters$onlySkel,
+             enrORdep = parameters$enrORdep,
+             locORser = parameters$locORser,
+             comp1 = comp1,
+             comp2 = comp2,
+             uniq = parameters$uniq,
+             outpath = base_dir)
+
+  
+  print('ORGANizer enrich is done is done!')
+
+  
+
+```
+
+
+# Process compare results
+```{r}
+
+HPO_compare_clean = HPO_compare_results %>%
+  rename(FoldChange = Ratio)%>%
+  rename(Term = Pheno)%>%
+  select(-c(HPO_ID))
+
+ORGANizer_compare_clean = ORGANizer_compare_results %>%
+  rename(FoldChange = Ratio)%>%
+  rename(Term = `Body Part`)%>%
+  select(-c(Type))
+
+
+colnames(GrandEnrich_compare_results$GO_BP)[colnames(GrandEnrich_compare_results$GO_BP) == "Ratio"] <- "FoldChange"
+colnames(GrandEnrich_compare_results$KEGG)[colnames(GrandEnrich_compare_results$KEGG) == "Ratio"] <- "FoldChange"
+colnames(GrandEnrich_compare_results$GAD_Disease)[colnames(GrandEnrich_compare_results$GAD_Disease) == "Ratio"] <- "FoldChange"
+
+
+# Add origin column and combine
+combined_compare_GrandEnrich_results <- bind_rows(list(
+  GO_BP = GrandEnrich_compare_results$GO_BP,
+  KEGG = GrandEnrich_compare_results$KEGG,
+  GAD_Disease = GrandEnrich_compare_results$GAD_Disease,
+  HPO = HPO_compare_clean,
+  ORGANizer = ORGANizer_compare_clean),
+  .id = "database")
+  
+
+final_compare_results = combined_compare_GrandEnrich_results%>%
+  #select(database,Term,FoldChange,`P-value`,FDR)%>%
+  mutate(Term = paste(database,Term),.keep = 'unused')%>%
+  arrange(FDR)%>%
+  arrange(desc(FoldChange))%>%
+  filter(FDR<0.05)%>%
+  distinct(Term,.keep_all = TRUE)
+
+write.csv(final_compare_results,paste0(parameters$outdir,'/',parameters$run_id,'_final_results.csv'),row.names=F,col.names = FALSE)
+
+
+
+temp = combined_compare_GrandEnrich_results%>%
+  filter(database == 'HPO')%>%
+  arrange(desc(FoldChange))%>%
+  arrange(FDR)%>%
+  select(-DB)
+
+```
+
+
+# Visualize compare
+```{r}
+
+for (database_name in unique(combined_compare_GrandEnrich_results$database)){
+  final_compare_results <- combined_compare_GrandEnrich_results %>%
+  filter(database == database_name)%>%
+  arrange(desc(FoldChange))%>%
+  arrange(FDR)%>%
+  select(-DB)%>%
+  filter(FDR<0.05)%>%
+  mutate(text.pos = if_else(FoldChange < 1, 1, 1))
+  
+  if(nrow(final_compare_results)>50){
+    final_compare_results = final_compare_results[1:50,]
+  }
+  
+  
+  ggplot(data = final_compare_results, aes(x =factor(Term, levels = Term[order(FoldChange, decreasing = FALSE)]),
+                                 y = log10(FoldChange), fill = -log10(FDR))) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(y = log10(text.pos)), label = final_compare_results$Term,hjust = "left")+
+  geom_hline(yintercept = 0, color = "black", size = 0.5) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_text(size = 12)) +
+  labs(title = paste0(compare_title,' database'),
+       x = "Term",
+       y = "Log Fold Change") +
+  scale_fill_gradient(low = "gray", high = "red") +  # Adjusted color scale
+  coord_flip()+
+  theme_void()+
+  theme(
+    axis.line.x = element_line(),  # Add x-axis line
+    axis.ticks.x = element_line(), # Add x-axis ticks
+    axis.text.x = element_text()   # Add x-axis text labels
+  )
+  
+  ggsave(paste0(base_dir, '/runs/', parameters$run_id, '/', parameters$run_id,'_',database_name, '_enrichment_results.png'), width = 20, height = 10)
+}
+         
+                                           
+
+
+
+ggplot(data = final_compare_results, aes(x =factor(Term, levels = Term[order(FoldChange, decreasing = FALSE)]),
+                                 y = log10(FoldChange), fill = -log10(FDR))) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(y = log10(text.pos)), label = final_compare_results$Term,hjust = "left")+
+  geom_hline(yintercept = 0, color = "black", size = 0.5) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_text(size = 12)) +
+  labs(title = compare_title,
+       x = "Term",
+       y = "Log Fold Change") +
+  scale_fill_gradient(low = "gray", high = "red") +  # Adjusted color scale
+  coord_flip()+
+  theme_void()
+
+ggsave(paste0(base_dir, '/runs/', parameters$run_id, '/', parameters$run_id, '_enrichment_results.png'), width = 10, height = 5)
+
+ggplot(data = final_compare_results[1:50,], aes(x =factor(Term, levels = Term[order(FoldChange, decreasing = FALSE)]),
+                                 y = log10(FoldChange), fill = -log10(FDR))) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(y = log10(text.pos)), label = final_compare_results$Term[1:50],hjust = "left")+
+  geom_hline(yintercept = 0, color = "black", size = 0.5) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_text(size = 12)) +
+  labs(title = compare_title,
+       x = "Term",
+       y = "Log Fold Change") +
+  scale_fill_gradient(low = "gray", high = "red") +  # Adjusted color scale
+  coord_flip()+
+  theme_void()
+
+ggsave(paste0(base_dir, '/runs/', parameters$run_id, '/', parameters$run_id, '_enrichment_results_top50.png'), width = 10, height = 5)
+
+
+
+
+```
+
+
+
+
+```{r}
+ # GAG_genes = GrandEnrich_results$GO_BP%>%
+ #   #filter(Term =='GO:0006024~glycosaminoglycan biosynthetic process')%>%
+ #   #filter(Term =='GO:0030203~glycosaminoglycan metabolic process')%>%
+ #   #filter(Term =='GO:0006022~aminoglycan metabolic process')%>%
+ #   filter(Term == 'GO:0006023~aminoglycan biosynthetic process')%>%
+ #   pull(`Genes associated with term`)
+ # 
+ #   
+ # 
+ # GAG_genes = unlist(strsplit(GAG_genes, ","))
+ # GAG_genes_pattern <- paste(GAG_genes, collapse = "|")
+ #  
+ # results = filtered_data %>%
+ #    filter(differential_activity == "True")%>%
+ #    filter(abs(logFC_derived_vs_ancestral) > log2(1.33))%>%
+ #    filter(str_detect(Gene_symbol, GAG_genes_pattern))%>%
+ #    as.data.frame()%>%
+ #    arrange(logFC_derived_vs_ancestral)%>%
+ #    select(c(oligo,logFC_derived_vs_ancestral,Gene_symbol))
+ #  
+ #  
+ # gene_counts = results$Gene_symbol
+ # gene_counts = unlist(strsplit(gene_counts, ","))
+ # gene_counts <- unlist(strsplit(gene_counts, ";"))
+ # 
+ # gene_counts <- as.data.frame(table(gene_counts))%>%
+ #   arrange(desc(Freq))
+```
+
+# Run Enrichment
+
+```{r}
+GrandEnrich_results = list()
+for(db in parameters$GrandEnrich_dbs){
+  GrandEnrich_results[[db]] = TheGrandEnrich_enrich(db = db,
+                      genelist = genelist,
+                      background = background,
+                      locORser = parameters$locORser,
+                      minGenes = parameters$minGenes,
+                      enrORdep = parameters$enrORdep,
+                      comp = parameters$comp,
+                      uniq = parameters$uniq,
+                      outdir = paste(parameters$outdir,'/',sep=''))
+}
+
+print('TheGrandEnrich is done!')
+
+HPO_results = HPO_enrich(genelist = genelist,
+           background = background,
+           minGenes = parameters$minGenes,
+           TYPorALL = parameters$TYPorALL,
+           HPO_dbVer = parameters$HPO_dbVer,
+           systems = parameters$systems,
+           bodyparts = parameters$bodyparts,
+           directional = parameters$directional,
+           enrORdep = parameters$enrORdep,
+           comp = parameters$comp,
+           locORser = parameters$locORser,
+           uniq = parameters$uniq,
+           outpath = paste(parameters$outdir,'/',sep='')
+           )
+
+print('HPO enrich is done is done!')
+
+ORGANizer_results = ORGANizer_Organize(genelist = genelist,
+                   background = background,
+                   outpath = paste(parameters$outdir,'/',sep=''),
+                   curationLevel = parameters$curationLevel,
+                   FreqOfPheno = parameters$FreqOfPheno,
+                   DBversion = parameters$DBversion,
+                   minGenes = parameters$minGenes,
+                   onlySkel = parameters$onlySkel,
+                   enrORdep = parameters$enrORdep,
+                   locORser = parameters$locORser,
+                   comp = parameters$comp,
+                   uniq = parameters$uniq)
+
+print('ORGANizer enrich is done is done!')
+
+write(genelist, file = paste0(parameters$outdir,'/',parameters$run_id,'_gene_list.txt'), ncolumns = 1)
+write(background, file = paste0(parameters$outdir,'/',parameters$run_id,'_background.txt'), ncolumns = 1)
+
+write.csv(genelist,paste0(parameters$outdir,'/',parameters$run_id,'_gene_list.csv'),row.names=F,col.names = FALSE)
+write.csv(background,paste0(parameters$outdir,'/',parameters$run_id,'_background.csv'),row.names=F,col.names = FALSE)
+
+sink(paste0(parameters$outdir,'/',parameters$run_id,'_parameters.txt'))
+print(parameters)    
+sink()    
+
+```
+
+# Log
+
+```{r}
+master_log = paste(base_dir, '/enrich_master_table.csv',sep='')
+log_run(master_log,
+        parameters,
+        data_dir,
+        filterinng_description,
+        background_description,
+        group_description,
+        gene_group_count = length(genelist),
+        background_group_count = length(background))
+
+
+
+```
+
+
+
+
+# Process results
+
+
+```{r}
+
+HPO_clean = HPO_results %>%
+  dplyr::rename(FoldChange = Enrichment)%>%
+  dplyr::rename(Term = Pheno)%>%
+  select(Term,FoldChange,`P-value`,FDR)
+
+ORGANizer_clean = ORGANizer_results %>%
+  dplyr::rename(FoldChange = Enrichment)%>%
+  dplyr::rename(Term = `Body Part`)%>%
+  select(Term,FoldChange,`P-value`,FDR)
+
+# Add origin column and combine
+combined_GrandEnrich_results <- bind_rows(list(
+  GO_BP = GrandEnrich_results$GO_BP,
+  KEGG = GrandEnrich_results$KEGG,
+  GAD_Disease = GrandEnrich_results$GAD_Disease,
+  HPO = HPO_clean,
+  ORGANizer = ORGANizer_clean),
+  .id = "database")
+
+final_results = combined_GrandEnrich_results%>%
+  select(database,Term,FoldChange,`P-value`,FDR)%>%
+  mutate(Term = paste(database,Term),.keep = 'unused')%>%
+  arrange(FDR)%>%
+  arrange(desc(FoldChange))%>%
+  filter(FDR<0.05)%>%
+  distinct(Term,.keep_all = TRUE)
+
+write.csv(final_results,paste0(parameters$outdir,'/',parameters$run_id,'_final_results.csv'),row.names=F,col.names = FALSE)
+
+
+
+```
+
+
+# Visulaize
+
+```{r}
+# Create the ggplot graph
+
+ggplot(final_results, aes(x =factor(Term, levels = Term[order(FoldChange, decreasing = FALSE)]),
+                                 y = FoldChange, fill = -log10(FDR))) +
+  geom_bar(stat = "identity") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_text(size = 12)) +
+  labs(title = title,
+       x = "Term",
+       y = "Log Fold Change") +
+  scale_fill_gradient(low = "gray", high = "red") +  # Adjusted color scale
+  coord_flip()
+
+ggsave(paste0(base_dir, '/runs/', parameters$run_id, '/', parameters$run_id, '_enrichment_results.png'), width = 10, height = 5)
+
+
+
+ggplot(final_results[1:30,], aes(x =factor(Term, levels = Term[order(FoldChange, decreasing = FALSE)]),
+                                 y = FoldChange, fill = -log10(FDR))) +
+  geom_bar(stat = "identity") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_text(size = 12)) +
+  labs(title = title,
+       x = "Term",
+       y = "Log Fold Change") +
+  scale_fill_gradient(low = "gray", high = "red") +  # Adjusted color scale
+  coord_flip()
+
+ggsave(paste0(base_dir, '/runs/', parameters$run_id, '/', parameters$run_id, '_enrichment_results_top30.png'), width = 10, height = 5)
+
+
+
+
+```
+
+
+
+
+

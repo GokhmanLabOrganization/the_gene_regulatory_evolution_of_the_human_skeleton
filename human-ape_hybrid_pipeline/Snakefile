@@ -1,0 +1,549 @@
+import os
+import pandas as pd
+
+##########################################################################################
+# creating output directories and loading config variables
+##########################################################################################
+
+jobs_output_dir = config['paths']['output'] + '/job_outputs'
+res_outputs_dir = config['paths']['output'] + '/outputs'
+
+if not os.path.exists(jobs_output_dir):
+	print("Creating jobs output directory: %s" % (jobs_output_dir) )
+	os.makedirs(jobs_output_dir)
+
+if not os.path.exists(res_outputs_dir):
+	print("Creating output directory: %s" % (res_outputs_dir) )
+	os.makedirs(res_outputs_dir)
+
+##########################################################################################
+# functions
+##########################################################################################
+
+#extract a column from a table, and return the table too
+def get_samples_metadata(samples_table_path, samples_colname):
+    samples_data = pd.read_csv(samples_table_path, sep='\t');
+    samples_data.set_index(samples_colname, inplace=True, drop=False); #add indices to the list (starts with 0)
+    return(samples_data[samples_colname].tolist(), samples_data)
+
+#return a list of samples2attributes
+def map_samples2attributes(samples_df, colname1, colname2):
+    return({str(row[colname1]) : str(row[colname2]) for index, row in samples_df.iterrows()})
+
+def get_sample_raw_read_paths(wildcards):
+	if sample2seq_type[wildcards.sample] == 'paired-end':
+		return( { 'R1' : sample2path1[wildcards.sample],
+				'R2' : sample2path2[wildcards.sample]})
+	else: # assuming 'single-end'
+		return( { 'R1' : sample2path1[wildcards.sample]})
+
+def sj_output(species):
+    """Return all SJ.out.tab files for a given species."""
+    indices = [i for i, value in enumerate(SAMPLES_DF['species']) if value == species]
+    return [
+        res_outputs_dir + '/STAR1/' + SPECIES[i] + '/' + SAMPLES[i] + '/SJ.out.tab'
+        for i in indices
+    ]
+
+def get_sample_raw_read_paths_trimmed(wildcards):
+    if sample2seq_type[wildcards.sample] == 'paired-end':
+        return( { 'R1': res_outputs_dir + '/seqprep/' + wildcards.sample + '/r1_trimmed.fastq.gz',
+                'R2': res_outputs_dir + '/seqprep/' + wildcards.sample + '/r2_trimmed.fastq.gz'})
+    else: # assuming 'single-end'
+        return({'R1': res_outputs_dir + '/seqprep/' + wildcards.sample + '/r1_trimmed.fastq.gz'})
+
+
+def get_sample_raw_read_paths_2remap(wildcards):
+    if sample2seq_type[wildcards.sample] == 'paired-end':
+        return( { 'R1': res_outputs_dir + '/Hornet/' + wildcards.species + '/' + wildcards.sample + '/rmdup.remap.fq1.gz',
+                'R2': res_outputs_dir + '/Hornet/' + wildcards.species + '/' + wildcards.sample + '/rmdup.remap.fq2.gz'})
+    else: # assuming 'single-end'
+        return({'R1': res_outputs_dir + '/Hornet/' + wildcards.species + '/' + wildcards.sample + '/rmdup.remap.fq1.gz'})
+
+
+def ret_sj_files_sy_species(wildcards):
+    return sj_files_by_species[wildcards.species]
+
+
+##########################################################################################
+# constants
+##########################################################################################
+
+samples_filename = config['paths']['samples_metadata']
+SAMPLES, SAMPLES_DF = get_samples_metadata(samples_filename, 'sample_id')
+SPECIES = SAMPLES_DF['species'].tolist()
+
+#create dictionaries (extract SAMPLES:attributes)
+sample2path1 = map_samples2attributes(SAMPLES_DF,'sample_id','read1')
+sample2path2 = map_samples2attributes(SAMPLES_DF,'sample_id','read2')
+sample2adapter1 = map_samples2attributes(SAMPLES_DF,'sample_id','adapter1')
+sample2adapter2 = map_samples2attributes(SAMPLES_DF,'sample_id','adapter2')
+sample2seq_type = map_samples2attributes(SAMPLES_DF,'sample_id','seq_type')
+sample2dataOrg = map_samples2attributes(SAMPLES_DF,'sample_id','dataOrg')
+sample2seqprep = map_samples2attributes(SAMPLES_DF,'sample_id','seqprep')
+sample2UMI = map_samples2attributes(SAMPLES_DF,'sample_id','UMI')
+
+sj_files_by_species = {
+    sp: sj_output(sp) for sp in SAMPLES_DF['species'].unique()
+}
+
+sj_files_str_by_species = {
+    sp: ' '.join(files) for sp, files in sj_files_by_species.items()
+}
+
+############################################################################################
+# rules
+############################################################################################
+
+rule all:
+    input:
+        expand(res_outputs_dir + '/ASE/{species}/{sample}_ase_by_reads_merged.txt',
+        zip, 
+        sample=SAMPLES,
+        species=SPECIES)
+
+# remove adapters
+rule seqprep:
+	input:
+		unpack(get_sample_raw_read_paths),
+	output:
+		R1 = res_outputs_dir + '/seqprep/{sample}/r1_trimmed.fastq.gz',
+		R2 = res_outputs_dir + '/seqprep/{sample}/r2_trimmed.fastq.gz',
+		R1d = res_outputs_dir + '/seqprep/{sample}/r1_discard.fastq.gz',
+		R2d = res_outputs_dir + '/seqprep/{sample}/r2_discard.fastq.gz'
+	params:
+		dataOrg = lambda wildcards: sample2dataOrg[wildcards.sample],
+		seq_type = lambda wildcards: sample2seq_type[wildcards.sample],
+		seq_prep = lambda wildcards: sample2seqprep[wildcards.sample],
+        adapter1 = lambda wildcards: sample2adapter1[wildcards.sample],
+        adapter2_flag= lambda wildcards: f"-B {sample2adapter2[wildcards.sample]}" if sample2seq_type[wildcards.sample] == "paired-end" else "",
+		job_out_dir  = jobs_output_dir,
+		job_out_file = "seqprep_{sample}",
+		job_name     = "SP_{sample}",
+		run_time     = "24:00",
+		cores        = "16",	
+		memory       = "80",
+	run:
+		if (params.seq_prep == 'yes'):
+			shell("SeqPrep \
+						-f {input.R1} -r {input.R2} \
+						-1 {output.R1} -2 {output.R2} \
+						-3 {output.R1d} -4 {output.R2d} \
+					-A {params.adapter1} {params.adapter2_flag}")
+		elif (params.seq_type == 'paired-end'):
+			shell("cp {input.R1} {output.R1} && cp {input.R2} {output.R2} && touch {output.R1d} && touch {output.R2d}")
+		else:
+			shell("cp {input.R1} {output.R1} && touch {output.R2} && touch {output.R1d} && touch {output.R2d}")
+
+# create STAR genome indices
+rule star_genome:
+    input:
+        fasta=lambda wildcards: config["species"][wildcards.species]["fasta"],
+        gff=lambda wildcards: config["species"][wildcards.species]["gff"],
+    threads: 16
+    output:
+        res_outputs_dir + '/STAR/{species}/Genome'
+    params:
+        overhang = lambda wildcards: config['star']['overhang'],
+        job_out_dir  = jobs_output_dir,
+        res_out_dir = res_outputs_dir,
+        job_out_file = "star_gen_{species}",
+        job_name     = "star_gen_{species}",
+        run_time     = "14:59",
+        cores        = "16",
+        memory       = "20",
+    shell:
+        """
+        STAR \
+            --runThreadN {threads} \
+            --runMode genomeGenerate \
+            --genomeDir {params.res_out_dir}/STAR/{wildcards.species} \
+            --genomeFastaFiles {input.fasta} \
+            --sjdbGTFfile {input.gff} \
+            --sjdbOverhang {params.overhang} \
+            --limitGenomeGenerateRAM 90000000000 \
+            --outTmpDir {params.res_out_dir}/STAR/{wildcards.species}/tmp_{wildcards.species}
+        """
+
+# align reads with STAR
+rule star_align:
+    input:
+        unpack(get_sample_raw_read_paths_trimmed),
+        genome = res_outputs_dir + '/STAR/{species}/Genome'
+    output:
+        bam = res_outputs_dir + '/STAR1/{species}/{sample}/Aligned.out.bam',
+        sj  = res_outputs_dir + '/STAR1/{species}/{sample}/SJ.out.tab'
+    threads: 16
+    params:
+        seq_type   = lambda wildcards: sample2seq_type[wildcards.sample],
+        res_out_dir = res_outputs_dir,
+        reads = lambda wildcards, input: (
+            f"{input.R1} {input.R2}"
+            if sample2seq_type[wildcards.sample] == "paired-end"
+            else f"{input.R1}"
+        ),
+        job_out_dir  = jobs_output_dir,
+        job_out_file = "star1_{species}_{sample}",
+        job_name     = "S1_{species}_{sample}",
+        run_time     = "9:59",
+        cores        = "16",
+        memory       = "20"
+    shell: """
+        STAR \
+            --genomeDir {params.res_out_dir}/STAR/{wildcards.species} \
+            --outFileNamePrefix {params.res_out_dir}/STAR1/{wildcards.species}/{wildcards.sample}/ \
+            --outSAMattributes MD NH \
+            --outSAMtype BAM Unsorted \
+            --runThreadN {threads} \
+            --readFilesCommand zcat \
+            --readFilesIn {params.reads} \
+            --outFilterMultimapNmax 1 \
+            --limitGenomeGenerateRAM 90000000000
+    """
+
+# second round of alignment with splice junctions from first round
+rule star_align2:
+    input:
+        unpack(get_sample_raw_read_paths_trimmed),
+        sj     = res_outputs_dir + "/STAR1/{species}/{sample}/SJ.out.tab",
+        genome = res_outputs_dir + "/STAR/{species}/Genome"
+    output:
+        bam = res_outputs_dir + "/STAR2/{species}/{sample}/Aligned.out.bam"
+    threads: 16
+    params:
+        seq_type   = lambda wildcards: sample2seq_type[wildcards.sample],
+        res_out_dir = res_outputs_dir,
+        sj_files_str = lambda wildcards: sj_files_str_by_species[wildcards.species],
+        reads = lambda wildcards, input: (
+            f"{input.R1} {input.R2}"
+            if sample2seq_type[wildcards.sample] == "paired-end"
+            else f"{input.R1}"
+        ),
+        job_out_dir  = jobs_output_dir,
+        job_out_file = "star2_{species}_{sample}",
+        job_name     = "S2_{species}_{sample}",
+        run_time     = "11:59",
+        cores        = "16",
+        memory       = "40"
+    shell: """
+        STAR \
+            --genomeDir {params.res_out_dir}/STAR/{wildcards.species} \
+            --outFileNamePrefix {params.res_out_dir}/STAR2/{wildcards.species}/{wildcards.sample}/ \
+            --outSAMattributes MD NH \
+            --outSAMtype BAM Unsorted \
+            --runThreadN {threads} \
+            --readFilesCommand zcat \
+            --readFilesIn {params.reads} \
+            --outFilterMultimapNmax 1 \
+            --sjdbFileChrStartEnd {params.sj_files_str} \
+            --limitSjdbInsertNsj 9000000 \
+            --limitGenomeGenerateRAM 90000000000
+    """
+
+# sort bam files
+rule sort:
+    input:
+        res_outputs_dir + '/STAR2/{species}/{sample}/Aligned.out.bam'
+    output:
+        res_outputs_dir + '/STAR2/{species}/{sample}/Aligned.out.sort.bam'
+    threads: 16
+    params:
+        job_out_dir  = jobs_output_dir,
+        job_out_file = "sort1_{species}_{sample}",
+        job_name     = "sort1_{species}_{sample}",
+        run_time     = "3:59",
+        cores        = "16",
+        memory       = "20",
+    shell: "samtools sort {input} -o {output}"
+
+rule index_star_bam:
+    input:
+        res_outputs_dir + '/STAR2/{species}/{sample}/Aligned.out.sort.bam'
+    output:
+        res_outputs_dir + '/STAR2/{species}/{sample}/Aligned.out.sort.bam.bai'
+    params:
+        job_out_dir  = jobs_output_dir,
+        job_out_file = "indexS2_{species}_{sample}",
+        job_name     = "indexS2_{species}_{sample}",
+        run_time     = "2:59",
+        cores        = "12",
+        memory       = "20",
+    conda:
+        config['conda']
+    shell:
+        "samtools index {input}"
+
+rule rmdup:
+    input:
+        bam = res_outputs_dir + '/STAR2/{species}/{sample}/Aligned.out.sort.bam',
+        bai = res_outputs_dir + '/STAR2/{species}/{sample}/Aligned.out.sort.bam.bai',
+    output:
+        res_outputs_dir + '/Hornet/{species}/{sample}/rmdup.bam',
+    params:
+        job_out_dir  = jobs_output_dir,
+        job_out_file = 'rmdup_{species}_{sample}',
+        job_name     = 'rmdup_{species}_{sample}',
+        has_umi      = lambda wildcards: sample2UMI[wildcards.sample],
+        run_time     = "05:59",
+        cores        = "12",
+        memory       = "80",
+    log:
+        jobs_output_dir + '/rmdups_{species}_{sample}.log',
+    conda:
+        config['conda']
+    shell:
+        r"""
+        if [ "{params.has_umi}" = "yes" ]; then
+            echo "Running UMI-tools dedup" >> {log}
+            umi_tools dedup \
+                --stdin={input.bam} \
+                --stdout={output} \
+                --log={log} \
+                --extract-umi-method=read_id \ 
+                --umi-separator=":"
+        else
+            echo "Running Picard MarkDuplicates" >> {log}
+            java -Xms4g -jar picard.jar MarkDuplicates \
+                I={input.bam} \
+                O={output} \
+                M={log} \
+                REMOVE_DUPLICATES=true \
+                DUPLICATE_SCORING_STRATEGY=RANDOM
+        fi
+        """
+
+# Hornet - correct allele mapping biases
+#identifies reads that may have mapping biases
+#hornet - https://github.com/TheFraserLab/hornet
+#WASP - https://github.com/bmvdgeijn/WASP
+#Note: Reads that overlap indels are currently excluded and will not be present in any of the 'remap' files
+#or the input.keep.bam file. For this reason the total number of reads will not add up to the
+#number of reads provided in the input.sort.bam file.
+
+#To make the snps.txt.gz files, from vcf files separated by chromosome:
+#mkdir snps
+#for i in chr*.vcf.gz; do j=$(echo $i | sed 's/\..*//'); pigz -dc $i | grep -v "^#" | awk '{if ((length($4) == 1) && (length($5) == 1)) printf ("%s\t%s\t%s\n", $2, $4, $5)}' | pigz > ${j}.snps.txt.gz; done
+#From a single vcf:
+#pigz -dc data.vcf.gz | grep -v "^#" | awk '{if ((length($4) == 1) && (length($5) == 1)) printf ("%s\t%s\t%s\n", $2, $4, $5) | "pigz > "$1".snps.txt.gz"}'
+
+rule Hornet_find_snps:
+    input:
+        bam=res_outputs_dir + '/Hornet/{species}/{sample}/rmdup.bam',
+    output:
+        R1=res_outputs_dir + '/Hornet/{species}/{sample}/rmdup.remap.fq1.gz',
+        R2=res_outputs_dir + '/Hornet/{species}/{sample}/rmdup.remap.fq2.gz',
+        keep=res_outputs_dir + '/Hornet/{species}/{sample}/rmdup.keep.bam',
+        toremap=res_outputs_dir + '/Hornet/{species}/{sample}/rmdup.to.remap.bam',
+        #dropped=f'{res_outputs_dir}/Hornet/{species}/{{sample}}/rmdup.dropped.bam',
+    params:
+        seq_type = lambda wildcards: sample2seq_type[wildcards.sample],
+        snps_path = lambda wildcards: config["species"][wildcards.species]["snps_wasp"],
+        res_out_dir = res_outputs_dir,
+        job_out_dir  = jobs_output_dir,
+        job_out_file = "findSNPs_{species}_{sample}",
+        job_name     = "findsnps_{species}_{sample}",
+        run_time     = "11:59",
+        cores        = "16",
+        memory       = "80",
+        p_flag = lambda wildcards: "-p" if sample2seq_type[wildcards.sample] == "paired-end" else ""
+    shell: """
+        if [ "{params.seq_type}" = "paired-end" ]; then
+            python snakemake-scripts/Hornet/mapping/find_intersecting_snps_for_single.py \
+                {params.p_flag} \
+                {input.bam} \
+                {params.snps_path};
+        else
+            touch {output.R2};
+            python snakemake-scripts/Hornet/mapping/find_intersecting_snps_for_single.py \
+                {input.bam} \
+                {params.snps_path};
+            mv {params.res_out_dir}/Hornet/{wildcards.species}/{wildcards.sample}/rmdup.remap.fq.gz {output.R1};
+        fi
+    """
+
+rule Hornet_remap:
+    input:
+        unpack(get_sample_raw_read_paths_2remap),
+        unpack(ret_sj_files_sy_species),
+        genome=res_outputs_dir + '/STAR/{species}/Genome',
+        sj=res_outputs_dir + '/STAR1/{species}/{sample}/SJ.out.tab', 
+    output:
+        res_outputs_dir + '/Hornet/{species}/{sample}/remapped_Aligned.out.bam'
+    params:
+        seq_type = lambda wildcards: sample2seq_type[wildcards.sample],
+        sj_files_str = lambda wildcards: sj_files_str_by_species[wildcards.species],
+        res_out_dir = res_outputs_dir,
+        job_out_dir  = jobs_output_dir,
+        job_out_file = "remap_{species}_{sample}",
+        job_name     = "remap_{species}_{sample}",
+        run_time     = "04:59",
+        cores        = "16",
+        memory       = "80",
+    threads: 16
+    shell: """
+        if [ "{params.seq_type}" = "paired-end" ]; then
+            STAR \
+                --genomeDir {params.res_out_dir}/STAR/{wildcards.species} \
+                --outFileNamePrefix {params.res_out_dir}/Hornet/{wildcards.species}/{wildcards.sample}/remapped_ \
+                --outSAMattributes MD NH \
+                --outSAMtype BAM Unsorted \
+                --runThreadN {threads} \
+                --readFilesCommand zcat \
+                --outFilterMultimapNmax 1 \
+                --sjdbFileChrStartEnd {params.sj_files_str} \
+                --readFilesIn {input.R1} {input.R2} \
+                --limitSjdbInsertNsj 9000000 \
+                --limitGenomeGenerateRAM 250000000000;
+        else
+            STAR \
+                --genomeDir {params.res_out_dir}/STAR/{wildcards.species} \
+                --outFileNamePrefix {params.res_out_dir}/Hornet/{wildcards.species}/{wildcards.sample}/remapped_ \
+                --outSAMattributes MD NH \
+                --outSAMtype BAM Unsorted \
+                --runThreadN {threads} \
+                --readFilesCommand zcat \
+                --outFilterMultimapNmax 1 \
+                --sjdbFileChrStartEnd {params.sj_files_str} \
+                --readFilesIn {input.R1} \
+                --limitSjdbInsertNsj 9000000 \
+                --limitGenomeGenerateRAM 250000000000;
+        fi
+    """
+
+# sort remapped bams
+rule sort_remappedReads:
+    input:
+        res_outputs_dir + '/Hornet/{species}/{sample}/remapped_Aligned.out.bam'
+    output:
+        res_outputs_dir + '/Hornet/{species}/{sample}/rmdup.remap.sort.bam'
+    params:
+        job_out_dir  = jobs_output_dir,
+        job_out_file = "sortRemapped_{species}_{sample}",
+        job_name     = "sortR_{species}_{sample}",
+        run_time     = "3:59",
+        cores        = "16",
+        memory       = "80",
+    threads: 12
+    shell: "samtools sort -n {input} -o {output}"
+
+# filter remapped reads
+rule Hornet_filter:
+    input:
+        toremap=res_outputs_dir + '/Hornet/{species}/{sample}/rmdup.to.remap.bam',
+        remapped=res_outputs_dir + '/Hornet/{species}/{sample}/rmdup.remap.sort.bam',
+    output:
+        kept=res_outputs_dir + '/Hornet/{species}/{sample}/rmdup.remap.kept.bam'
+    params:
+        p_flag = lambda wildcards: '-p' if sample2seq_type[wildcards.sample] == 'paired-end' else '',
+        seq_type = lambda wildcards: sample2seq_type[wildcards.sample],
+        job_out_dir  = jobs_output_dir,
+        job_out_file = "HornetFilter_{species}_{sample}",
+        job_name     = "HFilter_{species}_{sample}",
+        run_time     = "7:59",
+        cores        = "16",
+        memory       = "80",
+    threads: 16
+    shell:
+        """
+        if [ "{params.seq_type}" = "paired-end" ]; then
+            python snakemake-scripts/Hornet/mapping/filter_remapped_reads.py -p {input.toremap} {input.remapped} {output.kept}
+        else
+            python snakemake-scripts/Hornet/mapping/filter_remapped_reads.py {input.toremap} {input.remapped} {output.kept}
+        fi
+        """
+
+# sort kept reads
+rule sort_kept:
+    input:
+        res_outputs_dir + '/Hornet/{species}/{sample}/rmdup.remap.kept.bam'
+    output:
+        res_outputs_dir + '/Hornet/{species}/{sample}/rmdup.remap.kept.sort.bam'
+    params:
+        job_out_dir  = jobs_output_dir,
+        job_out_file = "sortKept_{species}_{sample}",
+        job_name     = "sKt_{species}_{sample}",
+        run_time     = "3:59",
+        cores        = "16",
+        memory       = "80",
+    threads: 12
+    shell: "samtools sort {input} -o {output}"
+
+# sort keep reads (not mapped to snps)
+rule sort_keep:
+    input:
+        res_outputs_dir + '/Hornet/{species}/{sample}/rmdup.keep.bam' #NOT MAPPED TO SNPS
+    output:
+        res_outputs_dir + '/Hornet/{species}/{sample}/rmdup.keep.sort.bam'
+    params:
+        job_out_dir  = jobs_output_dir,
+        job_out_file = "sortKeep_{species}_{sample}",
+        job_name     = "sK_{species}_{sample}",
+        run_time     = "4:59",
+        cores        = "16",
+        memory       = "80",
+    threads: 12
+    shell: "samtools sort {input} -o {output}"
+
+# merge kept reads and remapped kept reads
+rule merge:
+    input:
+        f1=res_outputs_dir + '/Hornet/{species}/{sample}/rmdup.remap.kept.sort.bam',
+        f2=res_outputs_dir + '/Hornet/{species}/{sample}/rmdup.keep.sort.bam'
+    output:
+        res_outputs_dir + '/Hornet/{species}/{sample}/rmdup.remap.kept.merged.bam'
+    params:
+        job_out_dir  = jobs_output_dir,
+        job_out_file = "merge_{species}_{sample}",
+        job_name     = "merge_{species}_{sample}",
+        run_time     = "4:59",
+        cores        = "16",
+        memory       = "80",
+    shell:
+        "samtools merge {output} {input.f1} {input.f2}"
+
+
+# index merged bam
+rule index_ase:
+    input:
+        res_outputs_dir + '/Hornet/{species}/{sample}/rmdup.remap.kept.merged.bam',
+    output:
+        res_outputs_dir + '/Hornet/{species}/{sample}/rmdup.remap.kept.merged.bam.bai',
+    params:
+        job_out_dir  = jobs_output_dir,
+        job_out_file = "indexASE_{species}_{sample}",
+        job_name     = "index_{species}_{sample}",
+        run_time     = "2:59",
+        cores        = "16",
+        memory       = "80",
+    shell: "samtools index {input}"
+
+# compute ASE counts
+# https://github.com/TheFraserLab/ASEr/blob/ReadASE/bin/GetGeneASEbyReads.py
+
+rule count_ase:
+    input:
+        snps = lambda wildcards: config["species"][wildcards.species]["snps"],
+        gff = lambda wildcards: config["species"][wildcards.species]["gff"],
+        snps_wasp = lambda wildcards: config["species"][wildcards.species]["snps_wasp"],
+        fasta = lambda wildcards: config["species"][wildcards.species]["fasta"],
+        reads=res_outputs_dir + '/Hornet/{species}/{sample}/rmdup.remap.kept.merged.bam',
+        readsidx=res_outputs_dir + '/Hornet/{species}/{sample}/rmdup.remap.kept.merged.bam.bai' #just so the run wouldn't start when this file is not ready yet. It is needed for the script, but the input is internal, no need to specify it
+    output:
+        res_outputs_dir + '/ASE/{species}/{sample}_ase_by_reads_merged.txt'
+    params:
+        job_out_dir  = jobs_output_dir,
+        job_out_file = "ASE_{species}_{sample}",
+        job_name     = "ASE_{species}_{sample}",
+        run_time     = "7:59",
+        cores        = "16",
+        memory       = "80",
+    threads: 16
+    shell: """
+        python snakemake-scripts/ASEr/bin/GetGeneASEbyReads.py --id-name gene_name\
+        {input.snps} {input.gff} {input.snps_wasp} {input.fasta} {input.reads} {wildcards.species}\
+        -o {output};
+        """
+
+
+
+

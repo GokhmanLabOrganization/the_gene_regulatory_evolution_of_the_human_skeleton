@@ -1,0 +1,354 @@
+---
+title: "GrandEnrichWrap"
+author: "Nadav"
+date: "2024-12-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+# Initialize
+
+```{r}
+#lapply(paste('package:',names(sessionInfo()$otherPkgs),sep=""),detach,character.only=TRUE,unload=TRUE)
+
+
+library(dplyr)
+library(ggplot2)
+
+```
+
+
+## Define relevant functions
+```{r}
+
+generate_run_id <- function() {
+  return(format(Sys.time(), "run_%Y%m%d_%H%M%S"))
+}
+
+create_run_directory <- function(base_dir) {
+  run_id <- generate_run_id()
+  run_dir <- file.path(base_dir, run_id)
+  dir.create(run_dir, recursive = TRUE, showWarnings = FALSE)
+  return(list(run_id = run_id, run_dir = run_dir))
+}
+
+log_run <- function(master_log,parameters,data_dir,filterinng_description,
+                    background_description,group_description,gene_group_count,
+                    background_group_count ) {
+  
+  if (!file.exists(master_log)) {
+    write.table(
+      data.frame(
+        RunID = character(),
+        DateTime = character(),
+        
+        data_dir = character(),
+        filterinng_description = character(),
+        background_description = character(),
+        group_description = character(),
+        
+        gene_group_count = numeric(),
+        background_group_count = numeric(),
+        
+        GrandEnrich_dbs = character(),
+        comp = character(),
+        locORser = character(),
+        minGenes = numeric(),
+        uniq = character(),
+        outdir = character(),
+        
+        #HPO specific
+        TYPorALL = character(),
+        HPO_dbVer = character(),
+        systems = character(),
+        bodyparts = character(),
+        enrORdep = character(),
+        directional =character(),
+        
+        #ORGANizer specific
+        curationLevel = character(),
+        FreqOfPheno =character(),
+        onlySkel = character()),
+
+        file = master_log, sep = ",", row.names = FALSE, col.names = TRUE
+    )
+  }
+  
+  log_entry <- data.frame(
+    RunID = parameters$run_id,
+    DateTime = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+    
+    data_dir = data_dir,
+    filterinng_description = filterinng_description,
+    background_description = background_description,
+    group_description = group_description,
+    
+    gene_group_count = gene_group_count,
+    background_group_count = background_group_count, 
+    
+    GrandEnrich_dbs = paste(parameters$GrandEnrich_dbs,collapse=','),
+    comp = parameters$comp,
+    locORser = parameters$locORser,
+    minGenes = parameters$minGenes,
+    uniq = parameters$uniq,
+    outdir = parameters$outdir,
+    
+    #HPO specific
+    TYPorALL = parameters$TYPorALL,
+    HPO_dbVer = parameters$HPO_dbVer,
+    systems = parameters$systems,
+    bodyparts = parameters$bodyparts,
+    enrORdep = parameters$enrORdep,
+    directional =parameters$directional,
+    
+    #ORGANizer specific
+    curationLevel = parameters$curationLevel,
+    FreqOfPheno =parameters$FreqOfPheno,
+    onlySkel = parameters$onlySkel
+  )
+  
+  #write.table(log_entry, file = master_log, sep = ",", row.names = FALSE, col.names = FALSE, append = TRUE)
+}
+
+```
+ 
+
+## Define parameters
+
+```{r}
+parameters = list()
+base_dir = "/home/labs/davidgo/Collaboration/humanMPRA/enrichment"
+run_dir_output = create_run_directory(paste(base_dir,'/runs',sep = ''))
+
+parameters$GrandEnrich_dbs = c('GO_BP','KEGG','GAD_Disease')
+parameters$run_id = run_dir_output$run_id
+parameters$outdir = run_dir_output$run_dir
+
+parameters$comp = "Standard with HPO filtering of skeletal"
+parameters$locORser = "ser"
+parameters$minGenes = 20
+parameters$uniq = T
+
+#HPO specific
+parameters$TYPorALL = "ALL"
+parameters$HPO_dbVer = "HPO 2024-04-26 Release"
+parameters$systems = "skeleton"
+parameters$bodyparts = "all"
+parameters$enrORdep = "enr"
+parameters$directional = F
+
+#ORGANizer specific
+parameters$curationLevel = "confident"
+parameters$FreqOfPheno = "all"
+parameters$DBversion = parameters$HPO_dbVer
+parameters$onlySkel = T
+
+```
+
+
+## Load libraries
+
+```{r message=FALSE, warning=FALSE}
+library('dplyr')
+library('tidyr')
+library('ggplot2')
+library('stringr')
+```
+
+## Source GrandEnrich
+```{r}
+grandEnrichDir <- "/home/labs/davidgo/Collaboration/backup/Lab_tools/Gokhman_Enrich/final_scripts"
+
+source(paste(grandEnrichDir,'/TheGrandEnrich_enrich.R',sep=''))
+source(paste(grandEnrichDir,'/ORGANizer_ORGANize.R',sep=''))
+source(paste(grandEnrichDir,'/HPO_enrich.R',sep=''))
+source(paste(grandEnrichDir,'/ORGANizer_compare.R',sep=''))
+source(paste(grandEnrichDir,'/TheGrandEnrich_compare.R',sep=''))
+source(paste(grandEnrichDir,'/HPO_compare.R',sep=''))
+
+
+```
+
+## Load raw data for enrichment analysis
+```{r}
+if(!exists('data')){
+  data_dir = "/home/labs/davidgo/Collaboration/USEFUL_DATASETS/Expression/Hybrids/summarized_data/ASE_info.tsv"
+  data <- read.csv(data_dir,sep = '\t')
+}
+
+```
+
+
+# Data processing
+
+## Filter the data according to preferences. Add description of filtering, which will be saved later
+
+```{r}
+data = data[, unique(c(1:10, grep("X21_Merkel_Cells", names(data), ignore.case = TRUE)))]
+
+### Pooled_mesenchyme 
+### Cartilage_Organoids_gene_ase_type 
+### Motor_neuron_.MN._gene_ase_type
+### X9_Chondorcytes
+### X21_Merkel_Cells
+```
+
+## Define background
+
+```{r}
+
+background_description = 'ASE and nonASE'
+
+genelist <- data %>%
+  filter(X21_Merkel_Cells_gene_ase_type == "ASE") %>% ### Pooled_mesenchyme Cartilage_Organoids_gene_ase_type Motor_neuron_.MN._gene_ase_type
+  pull(Gene)
+
+background <- data %>%
+  filter(X21_Merkel_Cells_gene_ase_type %in% c("ASE", "nonASE")) %>%
+  pull(Gene)
+
+```
+
+## Define group for enrichment
+
+```{r}
+
+group_description = 'ASE genes'
+
+
+title = paste('background:', length(background), 'list:',length(genelist))
+
+
+```
+
+
+
+
+# Run Enrichment
+
+```{r}
+GrandEnrich_results = list()
+for(db in parameters$GrandEnrich_dbs){
+  GrandEnrich_results[[db]] = TheGrandEnrich_enrich(db = db,
+                      genelist = genelist,
+                      background = background,
+                      locORser = parameters$locORser,
+                      minGenes = parameters$minGenes,
+                      enrORdep = parameters$enrORdep,
+                      comp = parameters$comp,
+                      uniq = parameters$uniq,
+                      outdir = paste(parameters$outdir,'/',sep=''))
+}
+
+print('TheGrandEnrich is done!')
+
+HPO_results = HPO_enrich(genelist = genelist,
+           background = background,
+           minGenes = parameters$minGenes,
+           TYPorALL = parameters$TYPorALL,
+           HPO_dbVer = parameters$HPO_dbVer,
+           systems = parameters$systems,
+           bodyparts = parameters$bodyparts,
+           directional = parameters$directional,
+           enrORdep = parameters$enrORdep,
+           comp = parameters$comp,
+           locORser = parameters$locORser,
+           uniq = parameters$uniq,
+           outpath = paste(parameters$outdir,'/',sep='')
+           )
+
+print('HPO enrich is done is done!')
+
+ORGANizer_results = ORGANizer_Organize(genelist = genelist,
+                   background = background,
+                   outpath = paste(parameters$outdir,'/',sep=''),
+                   curationLevel = parameters$curationLevel,
+                   FreqOfPheno = parameters$FreqOfPheno,
+                   DBversion = parameters$DBversion,
+                   minGenes = parameters$minGenes,
+                   onlySkel = parameters$onlySkel,
+                   enrORdep = parameters$enrORdep,
+                   locORser = parameters$locORser,
+                   comp = parameters$comp,
+                   uniq = parameters$uniq)
+
+print('ORGANizer enrich is done is done!')
+
+write(genelist, file = paste0(parameters$outdir,'/',parameters$run_id,'_gene_list.txt'), ncolumns = 1)
+write(background, file = paste0(parameters$outdir,'/',parameters$run_id,'_background.txt'), ncolumns = 1)
+
+write.csv(genelist,paste0(parameters$outdir,'/',parameters$run_id,'_gene_list.csv'),row.names=F,col.names = FALSE)
+write.csv(background,paste0(parameters$outdir,'/',parameters$run_id,'_background.csv'),row.names=F,col.names = FALSE)
+
+sink(paste0(parameters$outdir,'/',parameters$run_id,'_parameters.txt'))
+print(parameters)    
+sink()    
+
+```
+
+# Log
+
+```{r}
+master_log = paste(base_dir, '/enrich_master_table.csv',sep='')
+log_run(master_log,
+        parameters,
+        data_dir,
+        filterinng_description,
+        background_description,
+        group_description,
+        gene_group_count = length(genelist),
+        background_group_count = length(background))
+
+
+
+```
+
+
+
+
+# Process results
+
+
+```{r}
+
+HPO_clean = HPO_results %>%
+  rename(FoldChange = Enrichment)%>%
+  rename(Term = Pheno)%>%
+  select(Term,FoldChange,`P-value`,FDR)
+
+ORGANizer_clean = ORGANizer_results %>%
+  rename(FoldChange = Enrichment)%>%
+  rename(Term = `Body Part`)%>%
+  select(Term,FoldChange,`P-value`,FDR)
+
+# Add origin column and combine
+combined_GrandEnrich_results <- bind_rows(list(
+  GO_BP = GrandEnrich_results$GO_BP,
+  KEGG = GrandEnrich_results$KEGG,
+  GAD_Disease = GrandEnrich_results$GAD_Disease,
+  HPO = HPO_clean,
+  ORGANizer = ORGANizer_clean),
+  .id = "database")
+
+final_results = combined_GrandEnrich_results%>%
+  select(database,Term,FoldChange,`P-value`,FDR)%>%
+  mutate(Term = paste(database,Term),.keep = 'unused')%>%
+  arrange(FDR)%>%
+  arrange(desc(FoldChange))%>%
+  filter(FDR<0.05)%>%
+  distinct(Term,.keep_all = TRUE)
+
+#write.csv(final_results,paste0(parameters$outdir,'/',parameters$run_id,'_final_results.csv'),row.names=F,col.names = FALSE)
+
+
+
+```
+
+
+```{r}
+
+```
+
