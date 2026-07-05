@@ -14,129 +14,34 @@ knitr::opts_chunk$set(warning = FALSE, message = FALSE)
 ```{r}
 #lapply(paste('package:',names(sessionInfo()$otherPkgs),sep=""),detach,character.only=TRUE,unload=TRUE)
 
-
-library(dplyr)
-library(ggplot2)
-
-```
-
-
-## Define relevant functions
-```{r}
-
-generate_run_id <- function() {
-  return(format(Sys.time(), "run_%Y%m%d_%H%M%S"))
-}
-
-create_run_directory <- function(base_dir) {
-  run_id <- generate_run_id()
-  run_dir <- file.path(base_dir, run_id)
-  dir.create(run_dir, recursive = TRUE, showWarnings = FALSE)
-  return(list(run_id = run_id, run_dir = run_dir))
-}
-
-log_run <- function(master_log,parameters,data_dir,filterinng_description,
-                    background_description,group_description,gene_group_count,
-                    background_group_count ) {
-  
-  if (!file.exists(master_log)) {
-    write.table(
-      data.frame(
-        RunID = character(),
-        DateTime = character(),
-        
-        data_dir = character(),
-        filterinng_description = character(),
-        background_description = character(),
-        group_description = character(),
-        
-        gene_group_count = numeric(),
-        background_group_count = numeric(),
-        
-        GrandEnrich_dbs = character(),
-        comp = character(),
-        locORser = character(),
-        minGenes = numeric(),
-        uniq = character(),
-        outdir = character(),
-        
-        #HPO specific
-        TYPorALL = character(),
-        HPO_dbVer = character(),
-        systems = character(),
-        bodyparts = character(),
-        enrORdep = character(),
-        directional =character(),
-        
-        #ORGANizer specific
-        curationLevel = character(),
-        FreqOfPheno =character(),
-        onlySkel = character()),
-
-        file = master_log, sep = ",", row.names = FALSE, col.names = TRUE
-    )
-  }
-  
-  log_entry <- data.frame(
-    RunID = parameters$run_id,
-    DateTime = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
-    
-    data_dir = data_dir,
-    filterinng_description = filterinng_description,
-    background_description = background_description,
-    group_description = group_description,
-    
-    gene_group_count = gene_group_count,
-    background_group_count = background_group_count, 
-    
-    GrandEnrich_dbs = paste(parameters$GrandEnrich_dbs,collapse=','),
-    comp = parameters$comp,
-    locORser = parameters$locORser,
-    minGenes = parameters$minGenes,
-    uniq = parameters$uniq,
-    outdir = parameters$outdir,
-    
-    #HPO specific
-    TYPorALL = parameters$TYPorALL,
-    HPO_dbVer = parameters$HPO_dbVer,
-    systems = parameters$systems,
-    bodyparts = parameters$bodyparts,
-    enrORdep = parameters$enrORdep,
-    directional =parameters$directional,
-    
-    #ORGANizer specific
-    curationLevel = parameters$curationLevel,
-    FreqOfPheno =parameters$FreqOfPheno,
-    onlySkel = parameters$onlySkel
-  )
-  
-  #write.table(log_entry, file = master_log, sep = ",", row.names = FALSE, col.names = FALSE, append = TRUE)
-}
+library('dplyr')
+library('tidyr')
+library('ggplot2')
+library('stringr')
 
 ```
- 
 
 ## Define parameters
 
 ```{r}
-parameters = list()
-# --- Output path (EDIT THIS) ---
-# Run outputs and the master log are written under base_dir/runs/.
+# --- Output base directory (EDIT THIS) ---
+# Results are written under base_dir/<parameters$name>/{diff_vs_active,compare}/.
 base_dir = "."   # <- set to where results should be written
-run_dir_output = create_run_directory(paste(base_dir,'/runs',sep = ''))
 
-parameters$GrandEnrich_dbs = c('GO_BP','KEGG','GAD_Disease')
-parameters$run_id = run_dir_output$run_id
-parameters$outdir = run_dir_output$run_dir
+parameters = list()
+parameters$name = 'final_analysis_v11_temp'
+
+parameters$GrandEnrich_dbs = c('KEGG','GAD_Disease','GO_BP')  #
 
 parameters$comp = "Standard with HPO filtering of skeletal"
 parameters$locORser = "ser"
 parameters$minGenes = 20
+parameters$minGenes_compare = 20                            
+
 parameters$uniq = T
 
-#HPO specific
 parameters$TYPorALL = "ALL"
-parameters$HPO_dbVer = "HPO 2024-04-26 Release"
+  parameters$HPO_dbVer = "HPO 2024-04-26 Release"
 parameters$systems = "skeleton"
 parameters$bodyparts = "all"
 parameters$enrORdep = "enr"
@@ -148,19 +53,24 @@ parameters$FreqOfPheno = "all"
 parameters$DBversion = parameters$HPO_dbVer
 parameters$onlySkel = T
 
-```
+parameters$diff_threshold = 0.5
+parameters$compare_threshold = 0.2
+parameters$min_TPM = 0
 
 
-## Load libraries
+# Create the output subdirectories used throughout this script.
+dir.create(file.path(base_dir, parameters$name, 'diff_vs_active'), recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(base_dir, parameters$name, 'compare'),        recursive = TRUE, showWarnings = FALSE)
 
-```{r message=FALSE, warning=FALSE}
-library('dplyr')
-library('tidyr')
-library('ggplot2')
-library('stringr')
+# save parameters
+lines <- paste(names(parameters), parameters, sep=",")
+writeLines(lines, paste0(base_dir,'/',parameters$name,'/ parameters.csv'))
+
+
 ```
 
 ## Source GrandEnrich
+
 ```{r}
 # Vendored enrichment toolkit (a copy of GokhmanLabOrganization/Enrichment-analysis), bundled in this folder.
 grandEnrichDir <- "enrichment_toolkit"
@@ -176,65 +86,99 @@ source(paste(grandEnrichDir,'/HPO_compare.R',sep=''))
 ```
 
 ## Load raw data for enrichment analysis
-```{r}
-if(!exists('data')){
-  # Per-gene allele-specific expression (ASE) summary from the human-ape hybrids.
-  # On the lab server this was:
-  #   /home/labs/davidgo/Collaboration/USEFUL_DATASETS/Expression/Hybrids/summarized_data/ASE_info.tsv
-  data_dir = ""   # <- set to the path of ASE_info.tsv
-  data <- read.csv(data_dir,sep = '\t')
-}
-
-```
-
-
-# Data processing
-
-## Filter the data according to preferences. Add description of filtering, which will be saved later
-
-```{r}
-# --- Cell type to analyse (EDIT THIS) ---
-# The ASE table holds one *_gene_ase_type column per cell type. Set ASE_CELLTYPE to
-# the cell type whose ASE genes should be tested. The paper's ASE enrichment used the
-# osteochondral progenitor / chondrocyte column -- confirm the correct column name here.
-# Available options (column prefixes):
-#   Pooled_mesenchyme, Cartilage_Organoids, Motor_neuron_.MN., X9_Chondorcytes, X21_Merkel_Cells
-ASE_CELLTYPE = "X9_Chondorcytes"
-ase_type_col = paste0(ASE_CELLTYPE, "_gene_ase_type")
-
-data = data[, unique(c(1:10, grep(ASE_CELLTYPE, names(data), ignore.case = TRUE)))]
-```
-
-## Define background
 
 ```{r}
 
-background_description = 'ASE and nonASE'
+# Per-gene ASE + lineage-polarization results from the human-ape hybrids (ExpLBM = limb-bud mesenchyme).
+# On the lab server this was:
+#   /home/labs/davidgo/Collaboration/USEFUL_DATASETS/Expression/Hybrids/human_chimp/ExpLBM/outputs_05Jan2026_humanMPRA_draft1/ExpLBM_polarization_results.tsv
+data_dir = ""   # <- set to the path of ExpLBM_polarization_results.tsv
+data <- read.csv(data_dir,sep = '\t')
 
-genelist <- data %>%
-  filter(.data[[ase_type_col]] == "ASE") %>%
+
+diff_vs_active_background = data%>%
+  filter(ExpLBM_gene_ase_type %in% c('ASE','nonASE'))%>%
+  filter((ExpLBM_TPM_human_allele>parameters$min_TPM) &(ExpLBM_TPM_chimp_allele>parameters$min_TPM))%>%
+  #filter(!(ExpLBM_gene_ase_type == 'ASE' & derived == 'chimp-derived'))%>%
   pull(Gene)
 
-background <- data %>%
-  filter(.data[[ase_type_col]] %in% c("ASE", "nonASE")) %>%
+print(paste('background genes:', length(diff_vs_active_background)))
+
+# 
+
+unique_diff_active = data%>%
+  filter(ExpLBM_gene_ase_type %in% c('ASE'))%>%
+  filter((ExpLBM_TPM_human_allele>parameters$min_TPM) &(ExpLBM_TPM_chimp_allele>parameters$min_TPM))%>%
+  filter(abs(ExpLBM_LFC_human_ref)>parameters$diff_threshold)%>%
+  filter(derived == 'human-derived')%>%
   pull(Gene)
 
+print(paste('diff active genes:', length(unique_diff_active)))
+
+temp = data%>%
+  filter(ExpLBM_gene_ase_type %in% c('ASE'))%>%
+  filter(abs(ExpLBM_LFC_human_ref)>parameters$diff_threshold)%>%
+  filter(derived == 'human-derived')%>%
+  pull(ExpLBM_LFC_human_ref)
+hist(temp,breaks = 100)
+
+temp_volcano = data%>%
+  filter(ExpLBM_gene_ase_type %in% c('ASE','nonASE'))%>%
+  filter((ExpLBM_TPM_human_allele>parameters$min_TPM) &(ExpLBM_TPM_chimp_allele>parameters$min_TPM))%>%
+  #filter(abs(ExpLBM_LFC_human_ref)>parameters$diff_threshold)%>%
+  filter(derived == 'human-derived')
+
+ggplot(temp_volcano, aes(x = ExpLBM_LFC_human_ref, y = -log10(ExpLBM_LFC_padj_human_ref),color = ExpLBM_gene_ase_type)) +
+  geom_point(size = 1.6, stroke = 0.2, alpha = 0.2) +
+  #geom_text(aes(label = Gene))+
+  coord_cartesian(ylim = c(0, 20)) +
+  labs(x = "LFC (effect size)", y = "-log10(FDR)") +
+  theme_classic()
+
+  
+
+compare_background = data%>%
+  filter(ExpLBM_gene_ase_type %in% c('ASE','nonASE'))%>%
+  filter((ExpLBM_TPM_human_allele>parameters$min_TPM) &(ExpLBM_TPM_chimp_allele>parameters$min_TPM))%>%
+  pull(Gene)
+
+
+unique_diff_active_up = data%>%
+  filter(ExpLBM_gene_ase_type %in% c('ASE'))%>%
+  filter(ExpLBM_LFC_human_ref>parameters$compare_threshold)%>%
+  filter((ExpLBM_TPM_human_allele>parameters$min_TPM) &(ExpLBM_TPM_chimp_allele>parameters$min_TPM))%>%
+  #filter(ExpLBM_LFC_padj_human_ref<0.0001)%>%
+  filter(derived == 'human-derived')%>%
+  pull(Gene)
+
+unique_diff_active_down = data%>%
+  filter(ExpLBM_gene_ase_type %in% c('ASE'))%>%
+  filter(ExpLBM_LFC_human_ref< -parameters$compare_threshold)%>%
+  filter((ExpLBM_TPM_human_allele>parameters$min_TPM) &(ExpLBM_TPM_chimp_allele>parameters$min_TPM))%>%
+  #filter(ExpLBM_LFC_padj_human_ref<0.0001)%>%
+  filter(derived == 'human-derived')%>%
+  pull(Gene)
+
+
+
+save(compare_background, file = paste0(base_dir,'/',parameters$name,'/compare/compare_background.Rdata'))
+write.csv(compare_background, file = paste0(base_dir,'/',parameters$name,'/compare/compare_background.csv'))
+
+# Save the genes into the log file
+save(unique_diff_active_up, file = paste0(base_dir,'/',parameters$name,'/compare/diff_active_up_genes.Rdata'))
+save(unique_diff_active_down, file = paste0(base_dir,'/',parameters$name,'/compare/diff_active_down_genes.Rdata'))
+
+write(unique_diff_active_up, file = paste0(base_dir,'/',parameters$name,'/compare/diff_active_up_genes.txt'), ncolumns = 1)
+write(unique_diff_active_down, file = paste0(base_dir,'/',parameters$name,'/compare/diff_active_down_genes.txt'), ncolumns = 1)
+
+save(diff_vs_active_background, file = paste0(base_dir,'/',parameters$name,'/diff_vs_active/diff_vs_active_background.Rdata'))
+write(diff_vs_active_background, file = paste0(base_dir,'/',parameters$name,'/diff_vs_active/diff_vs_active_background.txt'), ncolumns = 1)
+
+title = paste('background:', length(diff_vs_active_background), 'list:',length(unique_diff_active))
+write(unique_diff_active, file = paste0(base_dir,'/',parameters$name,'/diff_vs_active/diff_active_genes.txt'), ncolumns = 1)
+
+
 ```
-
-## Define group for enrichment
-
-```{r}
-
-group_description = 'ASE genes'
-
-
-title = paste('background:', length(background), 'list:',length(genelist))
-
-
-```
-
-
-
 
 # Run Enrichment
 
@@ -242,20 +186,20 @@ title = paste('background:', length(background), 'list:',length(genelist))
 GrandEnrich_results = list()
 for(db in parameters$GrandEnrich_dbs){
   GrandEnrich_results[[db]] = TheGrandEnrich_enrich(db = db,
-                      genelist = genelist,
-                      background = background,
+                      genelist = unique_diff_active,
+                      background = diff_vs_active_background,
                       locORser = parameters$locORser,
                       minGenes = parameters$minGenes,
                       enrORdep = parameters$enrORdep,
                       comp = parameters$comp,
                       uniq = parameters$uniq,
-                      outdir = paste(parameters$outdir,'/',sep=''))
+                      outdir = paste0(base_dir,'/',parameters$name,'/diff_vs_active'))
 }
 
 print('TheGrandEnrich is done!')
 
-HPO_results = HPO_enrich(genelist = genelist,
-           background = background,
+HPO_results = HPO_enrich(genelist = unique_diff_active,
+           background = diff_vs_active_background,
            minGenes = parameters$minGenes,
            TYPorALL = parameters$TYPorALL,
            HPO_dbVer = parameters$HPO_dbVer,
@@ -266,14 +210,14 @@ HPO_results = HPO_enrich(genelist = genelist,
            comp = parameters$comp,
            locORser = parameters$locORser,
            uniq = parameters$uniq,
-           outpath = paste(parameters$outdir,'/',sep='')
-           )
+           outpath = paste0(base_dir,'/',parameters$name,'/diff_vs_active'))
 
 print('HPO enrich is done is done!')
 
-ORGANizer_results = ORGANizer_Organize(genelist = genelist,
-                   background = background,
-                   outpath = paste(parameters$outdir,'/',sep=''),
+
+ORGANizer_results = ORGANizer_Organize(genelist = unique_diff_active,
+                   background = diff_vs_active_background,
+                   outpath = paste0(base_dir,'/',parameters$name,'/diff_vs_active'),
                    curationLevel = parameters$curationLevel,
                    FreqOfPheno = parameters$FreqOfPheno,
                    DBversion = parameters$DBversion,
@@ -286,52 +230,32 @@ ORGANizer_results = ORGANizer_Organize(genelist = genelist,
 
 print('ORGANizer enrich is done is done!')
 
-write(genelist, file = paste0(parameters$outdir,'/',parameters$run_id,'_gene_list.txt'), ncolumns = 1)
-write(background, file = paste0(parameters$outdir,'/',parameters$run_id,'_background.txt'), ncolumns = 1)
-
-write.csv(genelist,paste0(parameters$outdir,'/',parameters$run_id,'_gene_list.csv'),row.names=F,col.names = FALSE)
-write.csv(background,paste0(parameters$outdir,'/',parameters$run_id,'_background.csv'),row.names=F,col.names = FALSE)
-
-sink(paste0(parameters$outdir,'/',parameters$run_id,'_parameters.txt'))
-print(parameters)    
-sink()    
+write.csv(GrandEnrich_results$KEGG, file = paste0(base_dir,'/',parameters$name,'/diff_vs_active/kegg_raw_output.csv'))
+write.csv(GrandEnrich_results$GAD_Disease, file = paste0(base_dir,'/',parameters$name,'/diff_vs_active/GAD_disease_raw_output.csv'))
+write.csv(GrandEnrich_results$GO_BP, file = paste0(base_dir,'/',parameters$name,'/diff_vs_active/GO_raw_output.csv'))
+write.csv(HPO_results, file = paste0(base_dir,'/',parameters$name,'/diff_vs_active/HPO_raw_output.csv'))
+write.csv(ORGANizer_results, file = paste0(base_dir,'/',parameters$name,'/diff_vs_active/ORGANizer_raw_output.csv'))   
 
 ```
-
-# Log
-
-```{r}
-master_log = paste(base_dir, '/enrich_master_table.csv',sep='')
-log_run(master_log,
-        parameters,
-        data_dir,
-        filterinng_description,
-        background_description,
-        group_description,
-        gene_group_count = length(genelist),
-        background_group_count = length(background))
-
-
-
-```
-
-
-
 
 # Process results
-
 
 ```{r}
 
 HPO_clean = HPO_results %>%
-  rename(FoldChange = Enrichment)%>%
-  rename(Term = Pheno)%>%
+  dplyr::rename(FoldChange = Enrichment)%>%
+  dplyr::rename(Term = Pheno)%>%
   select(Term,FoldChange,`P-value`,FDR)
 
+HPO_clean$database = "HPO"
+
 ORGANizer_clean = ORGANizer_results %>%
-  rename(FoldChange = Enrichment)%>%
-  rename(Term = `Body Part`)%>%
+  dplyr::rename(FoldChange = Enrichment)%>%
+  dplyr::rename(Term = `Body Part`)%>%
   select(Term,FoldChange,`P-value`,FDR)
+
+ORGANizer_clean$database = "geneORGANizer"
+
 
 # Add origin column and combine
 combined_GrandEnrich_results <- bind_rows(list(
@@ -342,6 +266,8 @@ combined_GrandEnrich_results <- bind_rows(list(
   ORGANizer = ORGANizer_clean),
   .id = "database")
 
+  
+  
 final_results = combined_GrandEnrich_results%>%
   select(database,Term,FoldChange,`P-value`,FDR)%>%
   mutate(Term = paste(database,Term),.keep = 'unused')%>%
@@ -350,14 +276,134 @@ final_results = combined_GrandEnrich_results%>%
   filter(FDR<0.05)%>%
   distinct(Term,.keep_all = TRUE)
 
-#write.csv(final_results,paste0(parameters$outdir,'/',parameters$run_id,'_final_results.csv'),row.names=F,col.names = FALSE)
-
-
+write.csv(final_results,paste0(base_dir,'/',parameters$name,'/diff_vs_active/diff_vs_active_processed_results.csv'),row.names=F,col.names = FALSE)
 
 ```
 
+# Run compare test
 
 ```{r}
 
+# compare test
+
+compare_title = paste("up genes:",length(unique_diff_active_up), 'down genes:',length(unique_diff_active_down),' background:', length(compare_background))
+ 
+ GrandEnrich_compare_results = list()
+ 
+ for(db in parameters$GrandEnrich_dbs){
+   print(db)
+   GrandEnrich_compare_results[[db]] = TheGrandEnrich_compare(db = db,
+                       genelist1 = unique_diff_active_up,
+                       genelist2 = unique_diff_active_down,
+                       background = compare_background,
+                       locORser = parameters$locORser,
+                       minGenes = parameters$minGenes_compare,
+                       enrORdep = parameters$enrORdep,
+                       comp_main = parameters$comp,
+                       comp1 = 'up',
+                       comp2 = 'down',
+                       uniq = parameters$uniq,
+                       outdir = paste0(base_dir,'/',parameters$name,'/compare'))
+ }
+   
+
+  print('TheGrandEnrich is done!')
+
+  HPO_compare_results = HPO_compare(
+             genelist1 = unique_diff_active_up,
+             genelist2 = unique_diff_active_down,
+             background = compare_background,
+             minGenes = parameters$minGenes_compare,
+             TYPorALL = parameters$TYPorALL,
+             HPO_dbVer = parameters$HPO_dbVer,
+             systems = parameters$systems,
+             bodyparts = parameters$bodyparts,
+             directional = parameters$directional,
+             enrORdep = parameters$enrORdep,
+             comp_main = parameters$comp,
+             comp1 = 'up',
+             comp2 = 'down',
+             locORser = parameters$locORser,
+             uniq = parameters$uniq,
+             outpath = paste0(base_dir,'/',parameters$name,'/compare'))
+  
+  print('HPO enrich is done is done!')
+
+  ORGANizer_compare_results = ORGANizer_compare(
+             genelist1 = unique_diff_active_up,
+             genelist2 = unique_diff_active_down,
+             background = compare_background,
+             curationLevel = parameters$curationLevel,
+             FreqOfPheno = parameters$FreqOfPheno,
+             DBversion = parameters$DBversion,
+             minGenes = parameters$minGenes_compare,
+             onlySkel = parameters$onlySkel,
+             enrORdep = parameters$enrORdep,
+             locORser = parameters$locORser,
+             comp1 = 'up',
+             comp2 = 'down',
+             uniq = parameters$uniq,
+             outpath = paste0(base_dir,'/',parameters$name,'/compare'))
+
+  
+  print('ORGANizer enrich is done is done!')
+
+
+
 ```
 
+```{r}
+
+write.csv(GrandEnrich_compare_results$KEGG, file = paste0(base_dir,'/',parameters$name,'/compare/kegg_raw_output.csv'))
+write.csv(GrandEnrich_compare_results$GAD_Disease, file = paste0(base_dir,'/',parameters$name,'/compare/GAD_disease_raw_output.csv'))
+write.csv(GrandEnrich_compare_results$GO_BP, file = paste0(base_dir,'/',parameters$name,'/compare/GO_raw_output.csv'))
+write.csv(HPO_compare_results, file = paste0(base_dir,'/',parameters$name,'/compare/HPO_raw_output.csv'))
+write.csv(ORGANizer_compare_results$GO, file = paste0(base_dir,'/',parameters$name,'/compare/ORGANizer_raw_output.csv'))
+
+```
+
+# Process compare results
+
+```{r}
+
+HPO_compare_clean = HPO_compare_results %>%
+  dplyr::rename(FoldChange = Ratio)%>%
+  dplyr::rename(Term = Pheno)%>%
+  select(-c(HPO_ID))
+
+ORGANizer_compare_clean = ORGANizer_compare_results %>%
+  dplyr::rename(FoldChange = Ratio)%>%
+  dplyr::rename(Term = `Body Part`)%>%
+  select(-c(Type))
+
+HPO_compare_clean$database = "HPO"
+ORGANizer_compare_clean$database = "geneORGANizer"
+
+
+
+colnames(GrandEnrich_compare_results$GO_BP)[colnames(GrandEnrich_compare_results$GO_BP) == "Ratio"] <- "FoldChange"
+colnames(GrandEnrich_compare_results$KEGG)[colnames(GrandEnrich_compare_results$KEGG) == "Ratio"] <- "FoldChange"
+colnames(GrandEnrich_compare_results$GAD_Disease)[colnames(GrandEnrich_compare_results$GAD_Disease) == "Ratio"] <- "FoldChange"
+
+
+# Add origin column and combine
+combined_compare_GrandEnrich_results <- bind_rows(list(
+  GO_BP = GrandEnrich_compare_results$GO_BP,
+  KEGG = GrandEnrich_compare_results$KEGG,
+  GAD_Disease = GrandEnrich_compare_results$GAD_Disease,
+  HPO = HPO_compare_clean,
+  ORGANizer = ORGANizer_compare_clean),
+  .id = "database")
+  
+
+final_compare_results = combined_compare_GrandEnrich_results%>%
+  #select(database,Term,FoldChange,`P-value`,FDR)%>%
+  mutate(Term = paste(database,Term),.keep = 'unused')%>%
+  arrange(FDR)%>%
+  arrange(desc(FoldChange))%>%
+  filter(FDR<0.05)%>%
+  distinct(Term,.keep_all = TRUE)
+
+write.csv(final_compare_results,paste0(base_dir,'/',parameters$name,'/compare/compare_processed_results.csv'),row.names=F,col.names = FALSE)
+
+```
