@@ -1,0 +1,10 @@
+name: enrichment_env
+channels:
+  - conda-forge
+dependencies:
+  - r-base=4.3
+  - r-essentials
+  - r-renv
+  - r-readxl
+  - pandoc
+

@@ -120,7 +120,9 @@ log_run <- function(master_log,parameters,data_dir,filterinng_description,
 
 ```{r}
 parameters = list()
-base_dir = "/home/labs/davidgo/Collaboration/humanMPRA/enrichment/final_analysis"
+# --- Output path (EDIT THIS) ---
+# Run outputs and the master log are written under base_dir/runs/.
+base_dir = "."   # <- set to where results should be written
 run_dir_output = create_run_directory(paste(base_dir,'/runs',sep = ''))
 
 parameters$GrandEnrich_dbs = c('GO_BP','KEGG','GAD_Disease')
@@ -160,7 +162,8 @@ library('stringr')
 
 ## Source GrandEnrich
 ```{r}
-grandEnrichDir <- "/home/labs/davidgo/Collaboration/backup/Lab_tools/Gokhman_Enrich/final_scripts"
+# Vendored enrichment toolkit (a copy of GokhmanLabOrganization/Enrichment-analysis), bundled in this folder.
+grandEnrichDir <- "enrichment_toolkit"
 
 source(paste(grandEnrichDir,'/TheGrandEnrich_enrich.R',sep=''))
 source(paste(grandEnrichDir,'/ORGANizer_ORGANize.R',sep=''))
@@ -175,7 +178,10 @@ source(paste(grandEnrichDir,'/HPO_compare.R',sep=''))
 ## Load raw data for enrichment analysis
 ```{r}
 if(!exists('data')){
-  data_dir = "/home/labs/davidgo/Collaboration/humanMPRA/top_candidates/chondrocytes/humanMPRA_annotations_v3.csv"
+  # Master MPRA per-oligo annotation table (humanMPRA_annotations_v3.csv).
+  # On the lab server this was:
+  #   /home/labs/davidgo/Collaboration/humanMPRA/top_candidates/chondrocytes/humanMPRA_annotations_v3.csv
+  data_dir = ""   # <- set to the path of humanMPRA_annotations_v3.csv
   data <- read.csv(data_dir)
 }
 

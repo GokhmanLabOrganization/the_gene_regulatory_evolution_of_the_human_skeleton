@@ -120,7 +120,9 @@ log_run <- function(master_log,parameters,data_dir,filterinng_description,
 
 ```{r}
 parameters = list()
-base_dir = "/home/labs/davidgo/Collaboration/humanMPRA/enrichment"
+# --- Output path (EDIT THIS) ---
+# Run outputs and the master log are written under base_dir/runs/.
+base_dir = "."   # <- set to where results should be written
 run_dir_output = create_run_directory(paste(base_dir,'/runs',sep = ''))
 
 parameters$GrandEnrich_dbs = c('GO_BP','KEGG','GAD_Disease')
@@ -160,7 +162,8 @@ library('stringr')
 
 ## Source GrandEnrich
 ```{r}
-grandEnrichDir <- "/home/labs/davidgo/Collaboration/backup/Lab_tools/Gokhman_Enrich/final_scripts"
+# Vendored enrichment toolkit (a copy of GokhmanLabOrganization/Enrichment-analysis), bundled in this folder.
+grandEnrichDir <- "enrichment_toolkit"
 
 source(paste(grandEnrichDir,'/TheGrandEnrich_enrich.R',sep=''))
 source(paste(grandEnrichDir,'/ORGANizer_ORGANize.R',sep=''))
@@ -175,7 +178,10 @@ source(paste(grandEnrichDir,'/HPO_compare.R',sep=''))
 ## Load raw data for enrichment analysis
 ```{r}
 if(!exists('data')){
-  data_dir = "/home/labs/davidgo/Collaboration/USEFUL_DATASETS/Expression/Hybrids/summarized_data/ASE_info.tsv"
+  # Per-gene allele-specific expression (ASE) summary from the human-ape hybrids.
+  # On the lab server this was:
+  #   /home/labs/davidgo/Collaboration/USEFUL_DATASETS/Expression/Hybrids/summarized_data/ASE_info.tsv
+  data_dir = ""   # <- set to the path of ASE_info.tsv
   data <- read.csv(data_dir,sep = '\t')
 }
 
@@ -187,13 +193,16 @@ if(!exists('data')){
 ## Filter the data according to preferences. Add description of filtering, which will be saved later
 
 ```{r}
-data = data[, unique(c(1:10, grep("X21_Merkel_Cells", names(data), ignore.case = TRUE)))]
+# --- Cell type to analyse (EDIT THIS) ---
+# The ASE table holds one *_gene_ase_type column per cell type. Set ASE_CELLTYPE to
+# the cell type whose ASE genes should be tested. The paper's ASE enrichment used the
+# osteochondral progenitor / chondrocyte column -- confirm the correct column name here.
+# Available options (column prefixes):
+#   Pooled_mesenchyme, Cartilage_Organoids, Motor_neuron_.MN., X9_Chondorcytes, X21_Merkel_Cells
+ASE_CELLTYPE = "X9_Chondorcytes"
+ase_type_col = paste0(ASE_CELLTYPE, "_gene_ase_type")
 
-### Pooled_mesenchyme 
-### Cartilage_Organoids_gene_ase_type 
-### Motor_neuron_.MN._gene_ase_type
-### X9_Chondorcytes
-### X21_Merkel_Cells
+data = data[, unique(c(1:10, grep(ASE_CELLTYPE, names(data), ignore.case = TRUE)))]
 ```
 
 ## Define background
@@ -203,11 +212,11 @@ data = data[, unique(c(1:10, grep("X21_Merkel_Cells", names(data), ignore.case =
 background_description = 'ASE and nonASE'
 
 genelist <- data %>%
-  filter(X21_Merkel_Cells_gene_ase_type == "ASE") %>% ### Pooled_mesenchyme Cartilage_Organoids_gene_ase_type Motor_neuron_.MN._gene_ase_type
+  filter(.data[[ase_type_col]] == "ASE") %>%
   pull(Gene)
 
 background <- data %>%
-  filter(X21_Merkel_Cells_gene_ase_type %in% c("ASE", "nonASE")) %>%
+  filter(.data[[ase_type_col]] %in% c("ASE", "nonASE")) %>%
   pull(Gene)
 
 ```
