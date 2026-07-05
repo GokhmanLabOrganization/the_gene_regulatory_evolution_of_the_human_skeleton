@@ -3,22 +3,30 @@
 #SBATCH -n 1
 #SBATCH -c 2
 #SBATCH --gpus 1
-#SBATCH -o /home/zicong_zhang/stdout/%x.o%j
-#SBATCH -e /home/zicong_zhang/stdout/%x.e%j
+#SBATCH -o stdout/%x.o%j       # adjust to your own log directory (must exist before submitting)
+#SBATCH -e stdout/%x.e%j
 #SBATCH -p gpu
+
+# Run MPRALegNet (https://github.com/autosome-ru/human_legnet) over one or more FASTA
+# files and ensemble the per-checkpoint predictions into a single score table.
+# Requires a local clone of human_legnet with a trained model, and a conda env named
+# 'legnet' (see README.md).
 
 source ~/miniconda3/etc/profile.d/conda.sh
 conda init bash
 conda activate legnet
 
-MODEL=~/human_legnet/models/HC/best_models
-CONFIG=~/human_legnet/models/HC/config.json
-TMP=~/tmp/HC
-FASTA=(~/Osteoarthritis/Hatzikotoulas_2025_mut.fa)
-OUT_DIR=~/Osteoarthritis
-FNAME=Hatzikotoulas_2025_mut.legnet.tsv
+# ==== EDIT: paths & inputs ====
+HUMAN_LEGNET=~/human_legnet                          # local clone of autosome-ru/human_legnet
+MODEL=$HUMAN_LEGNET/models/HC/best_models            # directory of ensemble checkpoints (*.ckpt)
+CONFIG=$HUMAN_LEGNET/models/HC/config.json           # model config
+TMP=~/tmp/HC                                          # scratch dir for splits + intermediate predictions
+FASTA=(~/Osteoarthritis/Hatzikotoulas_2025_mut.fa)   # input FASTA(s) to score
+OUT_DIR=~/Osteoarthritis                             # output directory
+FNAME=Hatzikotoulas_2025_mut.legnet.tsv              # output filename
 BATCH_SIZE=1
 CHUNK=100000
+# ==============================
 
 mkdir -p $TMP
 mkdir -p $OUT_DIR
@@ -55,7 +63,7 @@ do
     for chunk_fa in $SPLIT_DIR/*.fa
     do
       chunk_base=`basename -s .fa $chunk_fa`
-      python ~/human_legnet/fasta_predict.py \
+      python $HUMAN_LEGNET/fasta_predict.py \
         --config $CONFIG \
         --model $ckpt \
         --fasta $chunk_fa \
