@@ -31,6 +31,7 @@ Run the three steps in order:
 | 1 | `01_create_pools_gene_level.ipynb` | Build the experimental (`pool_genes_*`) and background (`pool_random_*`) pools from the master MPRA annotation table. |
 | 2 | `02_random_trajectories_analysis.py` | Main engine: generate the random-trajectory null matrix, compute empirical *P*-values, FDR-correct, and produce diagnostic plots. |
 | 3 | `03_replot_viz.py` | High-memory utility that re-plots publication-quality trajectory figures from the cached null matrix (no re-simulation). |
+| 4 | `04_gag_pathway_selection_fdr.ipynb` | FDR-corrects the selection-test *P*-values across the four KEGG GAG pathways (added in revision; Reviewer #4 comment 6). |
 | — | `plot_utils.py` | Shared plotting helpers used by the notebook. |
 
 ### Step 1 — Build the pools (`01_create_pools_gene_level.ipynb`)
